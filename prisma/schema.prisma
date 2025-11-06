@@ -1,0 +1,99 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// Model Master Barang
+model Barang {
+  id        String        @id // Kode Barang, e.g., "B001"
+  nama      String
+  satuan    String
+  batasMin  Int
+  items     ItemBarcode[] // Relasi ke setiap item fisik
+  poItems   PoItem[] // Relasi ke PO
+  createdAt DateTime      @default(now())
+  updatedAt DateTime      @updatedAt
+}
+
+// Model Master Pemasok
+model Pemasok {
+  id        String            @id // e.g., "P001"
+  nama      String            @unique
+  kontak    String
+  pos       PurchaseOrder[] // Relasi ke PO
+  createdAt DateTime          @default(now())
+  updatedAt DateTime          @updatedAt
+}
+
+// Model Master Tujuan
+model Tujuan {
+  id           String        @id // e.g., "T001"
+  nama         String        @unique
+  tipe         String // "Internal" atau "Eksternal"
+  outboundLogs OutboundLog[] // Relasi ke log keluar
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+// Model Purchase Order (PO)
+model PurchaseOrder {
+  id            String        @id // e.g., "PO-001"
+  tanggal       DateTime
+  status        String // "Outstanding", "Sebagian", "Selesai"
+  pemasokId     String
+  pemasok       Pemasok       @relation(fields: [pemasokId], references: [id])
+  items         PoItem[] // Daftar barang yang dipesan
+  receivedItems ItemBarcode[] // Daftar barang fisik yang diterima
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+// Model untuk item-item di dalam PO (PO Line Items)
+model PoItem {
+  id            String        @id @default(cuid())
+  poId          String
+  purchaseOrder PurchaseOrder @relation(fields: [poId], references: [id], onDelete: Cascade)
+  barangId      String
+  barang        Barang        @relation(fields: [barangId], references: [id])
+  jumlahPesan   Int
+
+  @@unique([poId, barangId]) // Satu barang hanya bisa ada 1x per PO
+  @@index([poId])
+  @@index([barangId])
+}
+
+// Model Item Fisik (Barcode) - INTI DARI GUDANG
+model ItemBarcode {
+  barcode       String        @id // Barcode unik
+  status        String // "available", "keluar", "scrap"
+  barangId      String
+  barang        Barang        @relation(fields: [barangId], references: [id])
+  poId          String
+  purchaseOrder PurchaseOrder @relation(fields: [poId], references: [id])
+  receivedAt    DateTime      @default(now())
+  outboundLog   OutboundLog? // Relasi ke log keluar jika sudah keluar
+
+  @@index([barangId])
+  @@index([poId])
+  @@index([status])
+}
+
+// Model Log Transaksi Keluar
+model OutboundLog {
+  id        String      @id @default(cuid())
+  tanggal   DateTime    @default(now())
+  referensi String?
+  tujuanId  String
+  tujuan    Tujuan      @relation(fields: [tujuanId], references: [id])
+  barcode   String      @unique // Barcode yang keluar
+  item      ItemBarcode @relation(fields: [barcode], references: [barcode])
+
+  @@index([tujuanId])
+}
