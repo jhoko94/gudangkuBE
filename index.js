@@ -22,12 +22,12 @@ const asyncHandler = (fn) => (req, res, next) =>
 // API untuk DASHBOARD (Requirement #1)
 // ===================================
 app.get('/api/dashboard', asyncHandler(async (req, res) => {
-    // 1. PO Outstanding
+    // 1. PO Outstanding (Sama)
     const poOutstandingCount = await prisma.purchaseOrder.count({
         where: { status: { not: 'Selesai' } }
     });
 
-    // 2. Barang Keluar Hari Ini
+    // 2. Barang Keluar Hari Ini (Sama)
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const tomorrow = new Date(today);
@@ -42,40 +42,107 @@ app.get('/api/dashboard', asyncHandler(async (req, res) => {
         }
     });
 
-    // 3. Stok Kritis (Ini query yang kompleks)
-    // Ambil semua barang
-    const allBarang = await prisma.barang.findMany();
-    // Ambil semua stok
+    // 3. Stok Kritis (LOGIKA BARU - v4)
+
+    // 3.1. Dapatkan stok TOTAL saat ini (Sama)
     const allStok = await prisma.itemBarcode.groupBy({
         by: ['barangId'],
         where: { status: 'available' },
         _count: { barcode: true }
     });
+    const stokMap = new Map(allStok.map(item => [item.barangId, item._count.barcode]));
 
-    // Ubah allStok menjadi Map untuk lookup cepat
-    const stokMap = new Map(
-        allStok.map(item => [item.barangId, item._count.barcode])
-    );
+    // 3.2. Dapatkan *semua* barang master (Sama)
+    const allBarang = await prisma.barang.findMany();
 
+    // 3.3. Tentukan barang apa saja yang kritis (berdasarkan STOK TOTAL)
     let stokKritisCount = 0;
-    const stokKritisList = [];
+    const criticalBarangIds = []; // Daftar ID barang yang kritis
+    const criticalBarangMap = new Map(); // Map<barangId, barangMaster>
 
     allBarang.forEach(barang => {
         const stok = stokMap.get(barang.id) || 0;
         if (stok <= barang.batasMin) {
             stokKritisCount++;
-            stokKritisList.push({
-                ...barang,
-                stok: stok,
-            });
+            criticalBarangIds.push(barang.id);
+            criticalBarangMap.set(barang.id, { ...barang, totalStok: stok }); // Simpan info barang kritis
         }
     });
 
+    if (criticalBarangIds.length === 0) {
+        // Jika tidak ada barang kritis, kirim respons kosong lebih awal
+        return res.json({
+            statStokKritis: 0,
+            statPoOutstanding: poOutstandingCount,
+            statBarangKeluar: barangKeluarHariIni,
+            groupedStokKritis: [],
+        });
+    }
+
+    // 3.4. (INI KUNCINYA) Ambil SEMUA barcode yang 'available'
+    //      HANYA untuk barang yang kritis
+    const availableBarcodesForCriticalItems = await prisma.itemBarcode.findMany({
+        where: {
+            barangId: { in: criticalBarangIds },
+            status: 'available'
+        },
+        include: {
+            purchaseOrder: { // Ambil PO terkait
+                include: {
+                    pemasok: true // Ambil Pemasok terkait PO
+                }
+            }
+        }
+    });
+    
+    // 3.5. Proses dan Kelompokkan berdasarkan Pemasok
+    // Map<pemasokId, { pemasokId, namaPemasok, items: Map<barangId, {stok: int, ...barang}> }>
+    const groupedKritis = new Map();
+
+    availableBarcodesForCriticalItems.forEach(barcode => {
+        const pemasok = barcode.purchaseOrder?.pemasok;
+        const barangId = barcode.barangId;
+
+        // Tentukan grup
+        const pemasokId = pemasok?.id || 'unknown';
+        const pemasokNama = pemasok?.nama || 'Tanpa Pemasok';
+
+        // Buat grup Pemasok jika belum ada
+        if (!groupedKritis.has(pemasokId)) {
+            groupedKritis.set(pemasokId, {
+                pemasokId: pemasokId,
+                namaPemasok: pemasokNama,
+                items: new Map() // Gunakan Map untuk de-duplikasi barang
+            });
+        }
+        const supplierGroup = groupedKritis.get(pemasokId);
+
+        // Buat entri barang di dalam grup jika belum ada
+        if (!supplierGroup.items.has(barangId)) {
+            const barangMaster = criticalBarangMap.get(barangId); // Ambil info master
+            supplierGroup.items.set(barangId, {
+                ...barangMaster,
+                stok: 0 // Mulai hitungan stok DARI PEMASOK INI dari 0
+            });
+        }
+        
+        // Tambahkan 1 ke stok barang ini DARI PEMASOK INI
+        supplierGroup.items.get(barangId).stok++;
+    });
+
+
+    // 3.6. Konversi hasil Map menjadi Array
+    const finalGroupedList = Array.from(groupedKritis.values()).map(group => ({
+        ...group,
+        items: Array.from(group.items.values()) // Ubah Map 'items' menjadi array
+    }));
+
+    // Kirim respons
     res.json({
-        statStokKritis: stokKritisCount,
+        statStokKritis: stokKritisCount, // Ini tetap total count (e.g. 2 barang kritis)
         statPoOutstanding: poOutstandingCount,
         statBarangKeluar: barangKeluarHariIni,
-        stokKritisList: stokKritisList,
+        groupedStokKritis: finalGroupedList,
     });
 }));
 
@@ -148,6 +215,52 @@ app.put('/api/barang/:id', asyncHandler(async (req, res) => {
         });
         res.json(updatedBarang);
     }
+}));
+
+app.get('/api/barang/:id/barcodes', asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { status } = req.query; // Opsional: ?status=available
+
+    // 1. Cek dulu apakah barangnya ada
+    const barang = await prisma.barang.findUnique({
+        where: { id }
+    });
+
+    if (!barang) {
+        return res.status(404).json({ message: 'Barang tidak ditemukan' });
+    }
+
+    // 2. Siapkan kondisi pencarian
+    const whereCondition = {
+        barangId: id
+    };
+
+    // 3. Jika ada query parameter status
+    if (status) {
+        whereCondition.status = status;
+    }
+
+    // 4. Cari semua barcode yang cocok
+    const barcodes = await prisma.itemBarcode.findMany({
+        where: whereCondition,
+        include: {
+            // Sertakan PO dan Pemasok untuk info "asal barang"
+            purchaseOrder: {
+                select: {
+                    id: true,
+                    pemasok: {
+                        select: {
+                            nama: true
+                        }
+                    }
+                }
+            }
+        },
+        // BARIS YANG MENYEBABKAN ERROR SUDAH DIHAPUS DARI SINI
+        // orderBy: { createdAt: 'desc' } <-- DIHAPUS
+    });
+
+    res.json(barcodes);
 }));
 
 // ===================================

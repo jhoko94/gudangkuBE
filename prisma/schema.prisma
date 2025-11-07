@@ -17,19 +17,19 @@ model Barang {
   satuan    String
   batasMin  Int
   items     ItemBarcode[] // Relasi ke setiap item fisik
-  poItems   PoItem[] // Relasi ke PO
+  poItems   PoItem[]      // Relasi ke PO
   createdAt DateTime      @default(now())
   updatedAt DateTime      @updatedAt
 }
 
 // Model Master Pemasok
 model Pemasok {
-  id        String            @id // e.g., "P001"
-  nama      String            @unique
+  id        String          @id // e.g., "P001"
+  nama      String          @unique
   kontak    String
   pos       PurchaseOrder[] // Relasi ke PO
-  createdAt DateTime          @default(now())
-  updatedAt DateTime          @updatedAt
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
 }
 
 // Model Master Tujuan
