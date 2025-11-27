@@ -1,0 +1,20 @@
+# Nixpacks configuration for Railway
+# Railway akan otomatis detect dan menggunakan konfigurasi ini
+
+[phases.setup]
+nixPkgs = ["nodejs-18_x"]
+
+[phases.install]
+cmds = [
+  "npm ci",
+  "npx prisma generate"
+]
+
+[phases.build]
+cmds = [
+  "npx prisma migrate deploy"
+]
+
+[start]
+cmd = "npm start"
+

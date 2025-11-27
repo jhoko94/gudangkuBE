@@ -4,9 +4,15 @@
   "description": "Backend untuk prototipe Gudang Kita",
   "main": "index.js",
   "scripts": {
+    "check": "node check-backend.js",
     "dev": "nodemon index.js",
     "start": "node index.js",
-    "build": "npx prisma migrate deploy"
+    "build": "npx prisma migrate deploy",
+    "seed": "node seed-demo.js",
+    "setup-db": "node setup-db.js",
+    "db:migrate": "npx prisma migrate dev",
+    "db:generate": "npx prisma generate",
+    "db:reset": "npx prisma migrate reset"
   },
   "dependencies": {
     "@prisma/client": "^5.10.2",

@@ -10,50 +10,90 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
+// Root endpoint - health check
 app.get('/', (req, res) => {
-  res.status(200).send('Backend Gudangku is alive!');
+  res.status(200).json({ 
+    message: 'Backend Gudangku is alive!',
+    status: 'running',
+    timestamp: new Date().toISOString()
+  });
 });
 
 // Wrapper untuk error handling di route async
-const asyncHandler = (fn) => (req, res, next) =>
-  Promise.resolve(fn(req, res, next)).catch(next);
+const asyncHandler = (fn) => (req, res, next) => {
+  Promise.resolve(fn(req, res, next)).catch((error) => {
+    console.error('Error in async handler:', error);
+    next(error);
+  });
+};
 
 // ===================================
 // API untuk DASHBOARD (Requirement #1)
 // ===================================
 app.get('/api/dashboard', asyncHandler(async (req, res) => {
-    // 1. PO Outstanding (Sama)
-    const poOutstandingCount = await prisma.purchaseOrder.count({
-        where: { status: { not: 'Selesai' } }
-    });
-
-    // 2. Barang Keluar Hari Ini (Sama)
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
-
-    const barangKeluarHariIni = await prisma.outboundLog.count({
-        where: {
-            tanggal: {
-                gte: today,
-                lt: tomorrow,
-            }
+    try {
+        // 1. PO Outstanding (Sama)
+        let poOutstandingCount = 0;
+        try {
+            poOutstandingCount = await prisma.purchaseOrder.count({
+                where: { status: { not: 'Selesai' } }
+            });
+        } catch (error) {
+            console.warn('Error counting PO Outstanding:', error.message);
+            // Lanjutkan dengan nilai default
         }
-    });
 
-    // 3. Stok Kritis (LOGIKA BARU - v4)
+        // 2. Barang Keluar Hari Ini (Sama)
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const tomorrow = new Date(today);
+        tomorrow.setDate(tomorrow.getDate() + 1);
 
-    // 3.1. Dapatkan stok TOTAL saat ini (Sama)
-    const allStok = await prisma.itemBarcode.groupBy({
-        by: ['barangId'],
-        where: { status: 'available' },
-        _count: { barcode: true }
-    });
-    const stokMap = new Map(allStok.map(item => [item.barangId, item._count.barcode]));
+        let barangKeluarHariIni = 0;
+        try {
+            barangKeluarHariIni = await prisma.outboundLog.count({
+                where: {
+                    tanggal: {
+                        gte: today,
+                        lt: tomorrow,
+                    }
+                }
+            });
+        } catch (error) {
+            console.warn('Error counting barang keluar:', error.message);
+            // Lanjutkan dengan nilai default
+        }
 
-    // 3.2. Dapatkan *semua* barang master (Sama)
-    const allBarang = await prisma.barang.findMany();
+        // 3. Stok Kritis (LOGIKA BARU - v4)
+
+        // 3.1. Dapatkan stok TOTAL saat ini (Sama)
+        let allStok = [];
+        try {
+            allStok = await prisma.itemBarcode.groupBy({
+                by: ['barangId'],
+                where: { status: 'available' },
+                _count: { barcode: true }
+            });
+        } catch (error) {
+            console.warn('Error grouping stok:', error.message);
+            // Lanjutkan dengan array kosong
+        }
+        const stokMap = new Map(allStok.map(item => [item.barangId, item._count.barcode]));
+
+        // 3.2. Dapatkan *semua* barang master (Sama)
+        let allBarang = [];
+        try {
+            allBarang = await prisma.barang.findMany();
+        } catch (error) {
+            console.error('Error fetching barang:', error.message);
+            // Jika error, kirim response dengan data kosong
+            return res.json({
+                statStokKritis: 0,
+                statPoOutstanding: poOutstandingCount,
+                statBarangKeluar: barangKeluarHariIni,
+                groupedStokKritis: [],
+            });
+        }
 
     // 3.3. Tentukan barang apa saja yang kritis (berdasarkan STOK TOTAL)
     let stokKritisCount = 0;
@@ -81,53 +121,81 @@ app.get('/api/dashboard', asyncHandler(async (req, res) => {
 
     // 3.4. (INI KUNCINYA) Ambil SEMUA barcode yang 'available'
     //      HANYA untuk barang yang kritis
-    const availableBarcodesForCriticalItems = await prisma.itemBarcode.findMany({
-        where: {
-            barangId: { in: criticalBarangIds },
-            status: 'available'
-        },
-        include: {
-            purchaseOrder: { // Ambil PO terkait
-                include: {
-                    pemasok: true // Ambil Pemasok terkait PO
+    // Gunakan select untuk menghindari error jika relasi tidak ada
+    let availableBarcodesForCriticalItems = [];
+    try {
+        availableBarcodesForCriticalItems = await prisma.itemBarcode.findMany({
+            where: {
+                barangId: { in: criticalBarangIds },
+                status: 'available'
+            },
+            include: {
+                purchaseOrder: { // Ambil PO terkait
+                    include: {
+                        pemasok: {
+                            select: {
+                                id: true,
+                                nama: true
+                            }
+                        }
+                    }
                 }
             }
-        }
-    });
+        });
+    } catch (error) {
+        console.error('Error fetching barcodes for critical items:', error.message);
+        // Jika error, lanjutkan dengan array kosong
+        availableBarcodesForCriticalItems = [];
+    }
     
     // 3.5. Proses dan Kelompokkan berdasarkan Pemasok
     // Map<pemasokId, { pemasokId, namaPemasok, items: Map<barangId, {stok: int, ...barang}> }>
     const groupedKritis = new Map();
 
     availableBarcodesForCriticalItems.forEach(barcode => {
-        const pemasok = barcode.purchaseOrder?.pemasok;
-        const barangId = barcode.barangId;
+        try {
+            const pemasok = barcode.purchaseOrder?.pemasok;
+            const barangId = barcode.barangId;
 
-        // Tentukan grup
-        const pemasokId = pemasok?.id || 'unknown';
-        const pemasokNama = pemasok?.nama || 'Tanpa Pemasok';
+            // Skip jika barangId tidak ada di criticalBarangMap (safety check)
+            if (!criticalBarangMap.has(barangId)) {
+                return;
+            }
 
-        // Buat grup Pemasok jika belum ada
-        if (!groupedKritis.has(pemasokId)) {
-            groupedKritis.set(pemasokId, {
-                pemasokId: pemasokId,
-                namaPemasok: pemasokNama,
-                items: new Map() // Gunakan Map untuk de-duplikasi barang
-            });
+            // Tentukan grup
+            const pemasokId = pemasok?.id || 'unknown';
+            const pemasokNama = pemasok?.nama || 'Tanpa Pemasok';
+
+            // Buat grup Pemasok jika belum ada
+            if (!groupedKritis.has(pemasokId)) {
+                groupedKritis.set(pemasokId, {
+                    pemasokId: pemasokId,
+                    namaPemasok: pemasokNama,
+                    items: new Map() // Gunakan Map untuk de-duplikasi barang
+                });
+            }
+            const supplierGroup = groupedKritis.get(pemasokId);
+
+            // Buat entri barang di dalam grup jika belum ada
+            if (!supplierGroup.items.has(barangId)) {
+                const barangMaster = criticalBarangMap.get(barangId); // Ambil info master
+                if (barangMaster) {
+                    supplierGroup.items.set(barangId, {
+                        ...barangMaster,
+                        stok: 0 // Mulai hitungan stok DARI PEMASOK INI dari 0
+                    });
+                }
+            }
+            
+            // Tambahkan 1 ke stok barang ini DARI PEMASOK INI
+            const item = supplierGroup.items.get(barangId);
+            if (item) {
+                item.stok++;
+            }
+        } catch (error) {
+            // Skip barcode yang error, log untuk debugging
+            console.warn('Error processing barcode:', barcode.barcode, error.message);
         }
-        const supplierGroup = groupedKritis.get(pemasokId);
-
-        // Buat entri barang di dalam grup jika belum ada
-        if (!supplierGroup.items.has(barangId)) {
-            const barangMaster = criticalBarangMap.get(barangId); // Ambil info master
-            supplierGroup.items.set(barangId, {
-                ...barangMaster,
-                stok: 0 // Mulai hitungan stok DARI PEMASOK INI dari 0
-            });
-        }
-        
-        // Tambahkan 1 ke stok barang ini DARI PEMASOK INI
-        supplierGroup.items.get(barangId).stok++;
     });
 
 
@@ -144,14 +212,24 @@ app.get('/api/dashboard', asyncHandler(async (req, res) => {
         statBarangKeluar: barangKeluarHariIni,
         groupedStokKritis: finalGroupedList,
     });
+    } catch (error) {
+        // Tangkap error yang tidak tertangani di try-catch sebelumnya
+        console.error('Unexpected error in dashboard endpoint:', error);
+        throw error; // Lempar ke error handler global
+    }
 }));
 
 // ===================================
 // API MASTER BARANG (Requirement #2)
 // ===================================
 app.get('/api/barang', asyncHandler(async (req, res) => {
-    const barang = await prisma.barang.findMany();
-    res.json(barang);
+    try {
+        const barang = await prisma.barang.findMany();
+        res.json(barang);
+    } catch (error) {
+        console.error('Error fetching barang:', error);
+        res.json([]); // Return empty array on error
+    }
 }));
 
 app.post('/api/barang', asyncHandler(async (req, res) => {
@@ -267,8 +345,13 @@ app.get('/api/barang/:id/barcodes', asyncHandler(async (req, res) => {
 // API MASTER PEMASOK (Requirement #2)
 // ===================================
 app.get('/api/pemasok', asyncHandler(async (req, res) => {
-    const pemasok = await prisma.pemasok.findMany();
-    res.json(pemasok);
+    try {
+        const pemasok = await prisma.pemasok.findMany();
+        res.json(pemasok);
+    } catch (error) {
+        console.error('Error fetching pemasok:', error);
+        res.json([]); // Return empty array on error
+    }
 }));
 
 app.post('/api/pemasok', asyncHandler(async (req, res) => {
@@ -294,8 +377,13 @@ app.put('/api/pemasok/:id', asyncHandler(async (req, res) => {
 // API MASTER TUJUAN (Requirement #2)
 // ===================================
 app.get('/api/tujuan', asyncHandler(async (req, res) => {
-    const tujuan = await prisma.tujuan.findMany();
-    res.json(tujuan);
+    try {
+        const tujuan = await prisma.tujuan.findMany();
+        res.json(tujuan);
+    } catch (error) {
+        console.error('Error fetching tujuan:', error);
+        res.json([]); // Return empty array on error
+    }
 }));
 
 app.post('/api/tujuan', asyncHandler(async (req, res) => {
@@ -321,31 +409,80 @@ app.put('/api/tujuan/:id', asyncHandler(async (req, res) => {
 // API PURCHASE ORDER (PO) (Requirement #3)
 // ===================================
 app.get('/api/po', asyncHandler(async (req, res) => {
-    const pos = await prisma.purchaseOrder.findMany({
-        include: { pemasok: true },
-        orderBy: { createdAt: 'desc' }
-    });
-    res.json(pos);
+    try {
+        const pos = await prisma.purchaseOrder.findMany({
+            include: { 
+                pemasok: {
+                    select: {
+                        id: true,
+                        nama: true,
+                        kontak: true
+                    }
+                } 
+            },
+            orderBy: { createdAt: 'desc' }
+        });
+        res.json(pos);
+    } catch (error) {
+        console.error('Error fetching PO list:', error);
+        // Jika error karena orderBy, coba tanpa orderBy
+        try {
+            const pos = await prisma.purchaseOrder.findMany({
+                include: { 
+                    pemasok: {
+                        select: {
+                            id: true,
+                            nama: true,
+                            kontak: true
+                        }
+                    } 
+                }
+            });
+            res.json(pos);
+        } catch (fallbackError) {
+            console.error('Fallback query also failed:', fallbackError);
+            // Jika masih error, kirim array kosong
+            res.json([]);
+        }
+    }
 }));
 
 // Untuk `viewPODetail`
 app.get('/api/po/:id', asyncHandler(async (req, res) => {
-    const { id } = req.params;
-    const po = await prisma.purchaseOrder.findUnique({
-        where: { id },
-        include: {
-            pemasok: true,
-            items: {
-                include: {
-                    barang: true,
+    try {
+        const { id } = req.params;
+        const po = await prisma.purchaseOrder.findUnique({
+            where: { id },
+            include: {
+                pemasok: {
+                    select: {
+                        id: true,
+                        nama: true,
+                        kontak: true
+                    }
+                },
+                items: {
+                    include: {
+                        barang: {
+                            select: {
+                                id: true,
+                                nama: true,
+                                satuan: true,
+                                batasMin: true
+                            }
+                        },
+                    }
                 }
             }
+        });
+        if (!po) {
+            return res.status(404).json({ message: 'PO tidak ditemukan' });
         }
-    });
-    if (!po) {
-        return res.status(404).json({ message: 'PO tidak ditemukan' });
+        res.json(po);
+    } catch (error) {
+        console.error('Error fetching PO detail:', error);
+        throw error; // Lempar ke error handler global
     }
-    res.json(po);
 }));
 
 // Untuk `submitPOBaru`
@@ -578,27 +715,45 @@ app.post('/api/outbound', asyncHandler(async (req, res) => {
 // ===================================
 // Untuk `renderStokTable`
 app.get('/api/stok', asyncHandler(async (req, res) => {
-    // 1. Ambil semua barang
-    const allBarang = await prisma.barang.findMany();
-    
-    // 2. Ambil semua stok
-    const allStok = await prisma.itemBarcode.groupBy({
-        by: ['barangId'],
-        where: { status: 'available' },
-        _count: { barcode: true }
-    });
+    try {
+        // 1. Ambil semua barang
+        let allBarang = [];
+        try {
+            allBarang = await prisma.barang.findMany();
+        } catch (error) {
+            console.error('Error fetching barang for stok:', error);
+            return res.json([]);
+        }
+        
+        // 2. Ambil semua stok
+        let allStok = [];
+        try {
+            allStok = await prisma.itemBarcode.groupBy({
+                by: ['barangId'],
+                where: { status: 'available' },
+                _count: { barcode: true }
+            });
+        } catch (error) {
+            console.warn('Error grouping stok:', error);
+            // Lanjutkan dengan array kosong
+            allStok = [];
+        }
 
-    // 3. Gabungkan
-    const stokMap = new Map(
-        allStok.map(item => [item.barangId, item._count.barcode])
-    );
+        // 3. Gabungkan
+        const stokMap = new Map(
+            allStok.map(item => [item.barangId, item._count.barcode])
+        );
 
-    const stokList = allBarang.map(barang => ({
-        ...barang,
-        stok: stokMap.get(barang.id) || 0
-    }));
+        const stokList = allBarang.map(barang => ({
+            ...barang,
+            stok: stokMap.get(barang.id) || 0
+        }));
 
-    res.json(stokList);
+        res.json(stokList);
+    } catch (error) {
+        console.error('Error in /api/stok:', error);
+        res.json([]); // Return empty array on error
+    }
 }));
 
 // Untuk `submitScrap`
@@ -631,10 +786,25 @@ app.post('/api/scrap', asyncHandler(async (req, res) => {
 
 
 // ===================================
+// 404 Handler - Route tidak ditemukan
+// ===================================
+// Handler ini HARUS ditempatkan SETELAH semua route, tapi SEBELUM error handler
+app.use((req, res) => {
+    res.status(404).json({ 
+        message: `Endpoint tidak ditemukan: ${req.method} ${req.path}`,
+        path: req.path,
+        method: req.method
+    });
+});
+
+// ===================================
 // Error Handler
 // ===================================
 app.use((err, req, res, next) => {
-    console.error(err.stack);
+    console.error('Error:', err);
+    console.error('Error stack:', err.stack);
+    console.error('Request path:', req.path);
+    console.error('Request method:', req.method);
     
     // Handle error Prisma
     if (err.code === 'P2002') { // Unique constraint violation
@@ -645,7 +815,38 @@ app.use((err, req, res, next) => {
         return res.status(404).json({ message: 'Data tidak ditemukan' });
     }
     
-    res.status(500).json({ message: 'Terjadi kesalahan di server', error: err.message });
+    // Handle database connection errors
+    if (err.code === 'P1001' || err.message?.includes('Can\'t reach database server') || err.message?.includes('connect ECONNREFUSED')) {
+        return res.status(503).json({ 
+            message: 'Database tidak dapat diakses. Pastikan database berjalan dan DATABASE_URL benar.',
+            error: 'Database connection error',
+            details: process.env.NODE_ENV === 'development' ? err.message : undefined
+        });
+    }
+    
+    // Handle Prisma client initialization errors
+    if (err.message?.includes('PrismaClient') || err.message?.includes('Prisma')) {
+        return res.status(500).json({ 
+            message: 'Kesalahan koneksi database. Pastikan DATABASE_URL sudah dikonfigurasi dengan benar.',
+            error: 'Database initialization error',
+            details: process.env.NODE_ENV === 'development' ? err.message : undefined
+        });
+    }
+    
+    // Handle Prisma query errors
+    if (err.code?.startsWith('P')) {
+        return res.status(500).json({ 
+            message: 'Kesalahan query database',
+            error: err.code,
+            details: process.env.NODE_ENV === 'development' ? err.message : undefined
+        });
+    }
+    
+    res.status(500).json({ 
+        message: 'Terjadi kesalahan di server', 
+        error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error',
+        details: process.env.NODE_ENV === 'development' ? err.stack : undefined
+    });
 });
 
 
