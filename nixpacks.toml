@@ -10,10 +10,10 @@ cmds = [
   "npx prisma generate"
 ]
 
+# Hapus migrate dari build phase karena database belum ready saat build
+# Migrate akan dijalankan di start command
 [phases.build]
-cmds = [
-  "npx prisma migrate deploy"
-]
+cmds = []
 
 [start]
 cmd = "npm start"

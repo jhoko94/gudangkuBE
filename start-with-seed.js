@@ -1,8 +1,24 @@
-// Script start yang menjalankan seed dulu (jika perlu), lalu start server
+// Script start yang menjalankan migrate, seed (jika perlu), lalu start server
 const { spawn } = require('child_process');
+const { execSync } = require('child_process');
 const { PrismaClient } = require('@prisma/client');
 
 const prisma = new PrismaClient();
+
+async function runMigrations() {
+    try {
+        console.log('🔄 Running database migrations...');
+        execSync('npx prisma migrate deploy', {
+            stdio: 'inherit',
+            env: process.env
+        });
+        console.log('✅ Migrations completed');
+    } catch (error) {
+        console.error('❌ Migration failed:', error.message);
+        // Tetap lanjut start server, mungkin migration sudah jalan sebelumnya
+        console.log('⚠️  Continuing with server start...');
+    }
+}
 
 async function checkAndSeed() {
     try {
@@ -46,10 +62,13 @@ async function checkAndSeed() {
 }
 
 async function start() {
-    // Jalankan seed dulu (jika perlu)
+    // 1. Jalankan migrate dulu (database sudah ready saat start)
+    await runMigrations();
+    
+    // 2. Jalankan seed (jika perlu)
     await checkAndSeed();
 
-    // Start server
+    // 3. Start server
     console.log('🚀 Starting server...');
     const serverProcess = spawn('node', ['index.js'], {
         stdio: 'inherit',
