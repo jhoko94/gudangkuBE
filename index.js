@@ -240,6 +240,53 @@ app.post('/api/barang', asyncHandler(async (req, res) => {
     res.status(201).json(newBarang);
 }));
 
+// Route yang lebih spesifik harus diletakkan SEBELUM route yang lebih umum
+app.get('/api/barang/:id/barcodes', asyncHandler(async (req, res) => {
+    const { id } = req.params;
+    const { status } = req.query; // Opsional: ?status=available
+
+    // 1. Cek dulu apakah barangnya ada
+    const barang = await prisma.barang.findUnique({
+        where: { id }
+    });
+
+    if (!barang) {
+        return res.status(404).json({ message: 'Barang tidak ditemukan' });
+    }
+
+    // 2. Siapkan kondisi pencarian
+    const whereCondition = {
+        barangId: id
+    };
+
+    // 3. Jika ada query parameter status
+    if (status) {
+        whereCondition.status = status;
+    }
+
+    // 4. Cari semua barcode yang cocok
+    const barcodes = await prisma.itemBarcode.findMany({
+        where: whereCondition,
+        include: {
+            // Sertakan PO dan Pemasok untuk info "asal barang"
+            purchaseOrder: {
+                select: {
+                    id: true,
+                    pemasok: {
+                        select: {
+                            nama: true
+                        }
+                    }
+                }
+            }
+        },
+        // BARIS YANG MENYEBABKAN ERROR SUDAH DIHAPUS DARI SINI
+        // orderBy: { createdAt: 'desc' } <-- DIHAPUS
+    });
+
+    res.json(barcodes);
+}));
+
 app.put('/api/barang/:id', asyncHandler(async (req, res) => {
     const { id: oldId } = req.params;
     const { id, nama, satuan, batasMin } = req.body;
@@ -295,7 +342,64 @@ app.put('/api/barang/:id', asyncHandler(async (req, res) => {
     }
 }));
 
-app.get('/api/barang/:id/barcodes', asyncHandler(async (req, res) => {
+app.delete('/api/barang/:id', asyncHandler(async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        // 1. Cek apakah barang ada
+        const barang = await prisma.barang.findUnique({
+            where: { id },
+            include: {
+                items: true,
+                poItems: true
+            }
+        });
+
+        if (!barang) {
+            return res.status(404).json({ message: 'Barang tidak ditemukan' });
+        }
+
+        // 2. Cek apakah barang masih digunakan
+        const itemCount = barang.items.length;
+        const poItemCount = barang.poItems.length;
+
+        if (itemCount > 0 || poItemCount > 0) {
+            let detailMessage = [];
+            if (itemCount > 0) {
+                detailMessage.push(`${itemCount} item fisik`);
+            }
+            if (poItemCount > 0) {
+                detailMessage.push(`${poItemCount} item di Purchase Order`);
+            }
+            
+            return res.status(409).json({ 
+                message: `Barang tidak dapat dihapus karena masih digunakan (${detailMessage.join(', ')})`,
+                detail: {
+                    itemCount,
+                    poItemCount
+                }
+            });
+        }
+
+        // 3. Hapus barang jika tidak digunakan
+        await prisma.barang.delete({
+            where: { id }
+        });
+
+        res.json({ message: 'Barang berhasil dihapus' });
+    } catch (error) {
+        console.error('Error deleting barang:', error);
+        
+        // Handle Prisma foreign key constraint error
+        if (error.code === 'P2003') {
+            return res.status(409).json({ 
+                message: 'Barang tidak dapat dihapus karena masih digunakan dalam transaksi lain' 
+            });
+        }
+        
+        throw error;
+    }
+}));
     const { id } = req.params;
     const { status } = req.query; // Opsional: ?status=available
 
