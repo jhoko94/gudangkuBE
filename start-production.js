@@ -14,19 +14,41 @@ async function runMigrations() {
             console.error('⚠️  Please set DATABASE_URL in Railway Variables');
             return false;
         }
+
+        // Cek apakah folder migrations ada
+        const fs = require('fs');
+        const path = require('path');
+        const migrationsPath = path.join(process.cwd(), 'prisma', 'migrations');
         
+        if (!fs.existsSync(migrationsPath)) {
+            console.error('❌ prisma/migrations folder not found!');
+            return false;
+        }
+
+        const migrations = fs.readdirSync(migrationsPath).filter(f => 
+            fs.statSync(path.join(migrationsPath, f)).isDirectory() && f !== 'migration_lock.toml'
+        );
+        
+        console.log(`📦 Found ${migrations.length} migration(s) to apply`);
+        
+        // Jalankan migrate
+        console.log('🚀 Executing: npx prisma migrate deploy');
         execSync('npx prisma migrate deploy', {
             stdio: 'inherit',
             env: process.env,
-            cwd: process.cwd()
+            cwd: process.cwd(),
+            shell: true
         });
+        
         console.log('✅ Migrations completed successfully');
         return true;
     } catch (error) {
-        console.error('❌ Migration failed:', error.message);
-        console.error('Error details:', error);
+        console.error('❌ Migration failed!');
+        console.error('Error message:', error.message);
+        if (error.stdout) console.error('Stdout:', error.stdout.toString());
+        if (error.stderr) console.error('Stderr:', error.stderr.toString());
         console.error('⚠️  Continuing with server start anyway...');
-        console.error('💡 You may need to run migrations manually: npx prisma migrate deploy');
+        console.error('💡 You may need to run migrations manually');
         return false;
     }
 }
@@ -76,21 +98,31 @@ async function checkAndSeed() {
 async function start() {
     console.log('🚀 Starting production server...');
     console.log('='.repeat(50));
+    console.log('Current directory:', process.cwd());
+    console.log('Node version:', process.version);
+    console.log('DATABASE_URL:', process.env.DATABASE_URL ? 'Set ✅' : 'Not set ❌');
+    console.log('='.repeat(50));
     
     // 1. Jalankan migrate dulu (database sudah ready saat start)
+    console.log('\n📋 Step 1: Running migrations...');
     const migrateSuccess = await runMigrations();
     
     if (!migrateSuccess) {
-        console.log('⚠️  Migration failed, but continuing...');
+        console.log('\n⚠️  Migration failed, but continuing...');
         console.log('💡 You may need to run migrations manually');
+        console.log('💡 Command: npx prisma migrate deploy');
+    } else {
+        console.log('\n✅ Migrations completed successfully!');
     }
     
     // 2. Jalankan seed (jika perlu)
+    console.log('\n📋 Step 2: Checking and seeding (if needed)...');
     await checkAndSeed();
 
     // 3. Start server
+    console.log('\n' + '='.repeat(50));
+    console.log('📋 Step 3: Starting Express server...');
     console.log('='.repeat(50));
-    console.log('🚀 Starting Express server...');
     const serverProcess = spawn('node', ['index.js'], {
         stdio: 'inherit',
         shell: true,

@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "check": "node check-backend.js",
+    "check-db": "node check-db-connection.js",
     "dev": "nodemon index.js",
     "start": "node index.js",
     "start:production": "node start-production.js",
@@ -14,6 +15,7 @@
     "seed": "node seed-demo.js",
     "seed:safe": "node seed-demo-safe.js",
     "setup-db": "node setup-db.js",
+    "check-migrations": "node check-migrations.js",
     "db:migrate": "npx prisma migrate dev",
     "db:generate": "npx prisma generate",
     "db:reset": "npx prisma migrate reset"
