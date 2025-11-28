@@ -7,17 +7,26 @@ const prisma = new PrismaClient();
 async function runMigrations() {
     try {
         console.log('🔄 Running database migrations...');
-        console.log('DATABASE_URL:', process.env.DATABASE_URL ? 'Set' : 'Not set');
+        console.log('DATABASE_URL:', process.env.DATABASE_URL ? 'Set ✅' : 'Not set ❌');
+        
+        if (!process.env.DATABASE_URL) {
+            console.error('❌ DATABASE_URL not set! Cannot run migrations.');
+            console.error('⚠️  Please set DATABASE_URL in Railway Variables');
+            return false;
+        }
         
         execSync('npx prisma migrate deploy', {
             stdio: 'inherit',
-            env: process.env
+            env: process.env,
+            cwd: process.cwd()
         });
         console.log('✅ Migrations completed successfully');
         return true;
     } catch (error) {
         console.error('❌ Migration failed:', error.message);
+        console.error('Error details:', error);
         console.error('⚠️  Continuing with server start anyway...');
+        console.error('💡 You may need to run migrations manually: npx prisma migrate deploy');
         return false;
     }
 }

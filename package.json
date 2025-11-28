@@ -8,6 +8,7 @@
     "dev": "nodemon index.js",
     "start": "node index.js",
     "start:production": "node start-production.js",
+    "start:simple": "node start-simple.js",
     "start:with-seed": "node start-with-seed.js",
     "build": "npx prisma migrate deploy",
     "seed": "node seed-demo.js",
