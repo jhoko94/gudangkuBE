@@ -119,18 +119,16 @@ app.get('/api/dashboard', asyncHandler(async (req, res) => {
         });
     }
 
-    // 3.4. (INI KUNCINYA) Ambil SEMUA barcode yang 'available'
-    //      HANYA untuk barang yang kritis
-    // Gunakan select untuk menghindari error jika relasi tidak ada
-    let availableBarcodesForCriticalItems = [];
+    // 3.4. Untuk setiap barang kritis, cari pemasok dari PO terakhir
+    // Ambil PO items untuk barang kritis
+    let poItemsForCriticalBarang = [];
     try {
-        availableBarcodesForCriticalItems = await prisma.itemBarcode.findMany({
+        poItemsForCriticalBarang = await prisma.poItem.findMany({
             where: {
-                barangId: { in: criticalBarangIds },
-                status: 'available'
+                barangId: { in: criticalBarangIds }
             },
             include: {
-                purchaseOrder: { // Ambil PO terkait
+                purchaseOrder: {
                     include: {
                         pemasok: {
                             select: {
@@ -142,59 +140,61 @@ app.get('/api/dashboard', asyncHandler(async (req, res) => {
                 }
             }
         });
+        
+        // Urutkan manual berdasarkan tanggal PO terbaru (descending)
+        poItemsForCriticalBarang.sort((a, b) => {
+            const dateA = new Date(a.purchaseOrder.tanggal);
+            const dateB = new Date(b.purchaseOrder.tanggal);
+            return dateB - dateA; // Terbaru dulu
+        });
     } catch (error) {
-        console.error('Error fetching barcodes for critical items:', error.message);
-        // Jika error, lanjutkan dengan array kosong
-        availableBarcodesForCriticalItems = [];
+        console.error('Error fetching PO items for critical items:', error.message);
+        poItemsForCriticalBarang = [];
     }
-    
+
     // 3.5. Proses dan Kelompokkan berdasarkan Pemasok
     // Map<pemasokId, { pemasokId, namaPemasok, items: Map<barangId, {stok: int, ...barang}> }>
     const groupedKritis = new Map();
 
-    availableBarcodesForCriticalItems.forEach(barcode => {
-        try {
-            const pemasok = barcode.purchaseOrder?.pemasok;
-            const barangId = barcode.barangId;
+    // Group PO items by barangId untuk mendapatkan PO terbaru per barang
+    const poItemsByBarang = new Map();
+    poItemsForCriticalBarang.forEach(poItem => {
+        const barangId = poItem.barangId;
+        if (!poItemsByBarang.has(barangId)) {
+            // Simpan PO item pertama (yang sudah terurut terbaru)
+            poItemsByBarang.set(barangId, poItem);
+        }
+    });
 
-            // Skip jika barangId tidak ada di criticalBarangMap (safety check)
-            if (!criticalBarangMap.has(barangId)) {
-                return;
-            }
+    // Untuk setiap barang kritis, cari pemasok dari PO terakhir
+    criticalBarangIds.forEach(barangId => {
+        const barangMaster = criticalBarangMap.get(barangId);
+        if (!barangMaster) return;
 
-            // Tentukan grup
-            const pemasokId = pemasok?.id || 'unknown';
-            const pemasokNama = pemasok?.nama || 'Tanpa Pemasok';
+        // Cari PO item terbaru untuk barang ini
+        const latestPoItem = poItemsByBarang.get(barangId);
+        
+        // Tentukan pemasok
+        const pemasok = latestPoItem?.purchaseOrder?.pemasok;
+        const pemasokId = pemasok?.id || 'unknown';
+        const pemasokNama = pemasok?.nama || 'Tanpa Pemasok';
 
-            // Buat grup Pemasok jika belum ada
-            if (!groupedKritis.has(pemasokId)) {
-                groupedKritis.set(pemasokId, {
-                    pemasokId: pemasokId,
-                    namaPemasok: pemasokNama,
-                    items: new Map() // Gunakan Map untuk de-duplikasi barang
-                });
-            }
-            const supplierGroup = groupedKritis.get(pemasokId);
+        // Buat grup Pemasok jika belum ada
+        if (!groupedKritis.has(pemasokId)) {
+            groupedKritis.set(pemasokId, {
+                pemasokId: pemasokId,
+                namaPemasok: pemasokNama,
+                items: new Map()
+            });
+        }
+        const supplierGroup = groupedKritis.get(pemasokId);
 
-            // Buat entri barang di dalam grup jika belum ada
-            if (!supplierGroup.items.has(barangId)) {
-                const barangMaster = criticalBarangMap.get(barangId); // Ambil info master
-                if (barangMaster) {
-                    supplierGroup.items.set(barangId, {
-                        ...barangMaster,
-                        stok: 0 // Mulai hitungan stok DARI PEMASOK INI dari 0
-                    });
-                }
-            }
-            
-            // Tambahkan 1 ke stok barang ini DARI PEMASOK INI
-            const item = supplierGroup.items.get(barangId);
-            if (item) {
-                item.stok++;
-            }
-        } catch (error) {
-            // Skip barcode yang error, log untuk debugging
-            console.warn('Error processing barcode:', barcode.barcode, error.message);
+        // Tambahkan barang ke grup (gunakan stok total, bukan stok per pemasok)
+        if (!supplierGroup.items.has(barangId)) {
+            supplierGroup.items.set(barangId, {
+                ...barangMaster,
+                stok: barangMaster.totalStok || 0 // Gunakan stok total
+            });
         }
     });
 
