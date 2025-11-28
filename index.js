@@ -400,50 +400,6 @@ app.delete('/api/barang/:id', asyncHandler(async (req, res) => {
         throw error;
     }
 }));
-    const { id } = req.params;
-    const { status } = req.query; // Opsional: ?status=available
-
-    // 1. Cek dulu apakah barangnya ada
-    const barang = await prisma.barang.findUnique({
-        where: { id }
-    });
-
-    if (!barang) {
-        return res.status(404).json({ message: 'Barang tidak ditemukan' });
-    }
-
-    // 2. Siapkan kondisi pencarian
-    const whereCondition = {
-        barangId: id
-    };
-
-    // 3. Jika ada query parameter status
-    if (status) {
-        whereCondition.status = status;
-    }
-
-    // 4. Cari semua barcode yang cocok
-    const barcodes = await prisma.itemBarcode.findMany({
-        where: whereCondition,
-        include: {
-            // Sertakan PO dan Pemasok untuk info "asal barang"
-            purchaseOrder: {
-                select: {
-                    id: true,
-                    pemasok: {
-                        select: {
-                            nama: true
-                        }
-                    }
-                }
-            }
-        },
-        // BARIS YANG MENYEBABKAN ERROR SUDAH DIHAPUS DARI SINI
-        // orderBy: { createdAt: 'desc' } <-- DIHAPUS
-    });
-
-    res.json(barcodes);
-}));
 
 // ===================================
 // API MASTER PEMASOK (Requirement #2)
@@ -476,6 +432,54 @@ app.put('/api/pemasok/:id', asyncHandler(async (req, res) => {
     res.json(updatedPemasok);
 }));
 
+app.delete('/api/pemasok/:id', asyncHandler(async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        // 1. Cek apakah pemasok ada
+        const pemasok = await prisma.pemasok.findUnique({
+            where: { id },
+            include: {
+                pos: true
+            }
+        });
+
+        if (!pemasok) {
+            return res.status(404).json({ message: 'Pemasok tidak ditemukan' });
+        }
+
+        // 2. Cek apakah pemasok masih digunakan
+        const poCount = pemasok.pos.length;
+
+        if (poCount > 0) {
+            return res.status(409).json({ 
+                message: `Pemasok tidak dapat dihapus karena masih digunakan dalam ${poCount} Purchase Order`,
+                detail: {
+                    poCount
+                }
+            });
+        }
+
+        // 3. Hapus pemasok jika tidak digunakan
+        await prisma.pemasok.delete({
+            where: { id }
+        });
+
+        res.json({ message: 'Pemasok berhasil dihapus' });
+    } catch (error) {
+        console.error('Error deleting pemasok:', error);
+        
+        // Handle Prisma foreign key constraint error
+        if (error.code === 'P2003') {
+            return res.status(409).json({ 
+                message: 'Pemasok tidak dapat dihapus karena masih digunakan dalam transaksi lain' 
+            });
+        }
+        
+        throw error;
+    }
+}));
+
 
 // ===================================
 // API MASTER TUJUAN (Requirement #2)
@@ -506,6 +510,54 @@ app.put('/api/tujuan/:id', asyncHandler(async (req, res) => {
         data: { nama, tipe }
     });
     res.json(updatedTujuan);
+}));
+
+app.delete('/api/tujuan/:id', asyncHandler(async (req, res) => {
+    const { id } = req.params;
+
+    try {
+        // 1. Cek apakah tujuan ada
+        const tujuan = await prisma.tujuan.findUnique({
+            where: { id },
+            include: {
+                outboundLogs: true
+            }
+        });
+
+        if (!tujuan) {
+            return res.status(404).json({ message: 'Tujuan tidak ditemukan' });
+        }
+
+        // 2. Cek apakah tujuan masih digunakan
+        const outboundCount = tujuan.outboundLogs.length;
+
+        if (outboundCount > 0) {
+            return res.status(409).json({ 
+                message: `Tujuan tidak dapat dihapus karena masih digunakan dalam ${outboundCount} transaksi keluar`,
+                detail: {
+                    outboundCount
+                }
+            });
+        }
+
+        // 3. Hapus tujuan jika tidak digunakan
+        await prisma.tujuan.delete({
+            where: { id }
+        });
+
+        res.json({ message: 'Tujuan berhasil dihapus' });
+    } catch (error) {
+        console.error('Error deleting tujuan:', error);
+        
+        // Handle Prisma foreign key constraint error
+        if (error.code === 'P2003') {
+            return res.status(409).json({ 
+                message: 'Tujuan tidak dapat dihapus karena masih digunakan dalam transaksi lain' 
+            });
+        }
+        
+        throw error;
+    }
 }));
 
 
