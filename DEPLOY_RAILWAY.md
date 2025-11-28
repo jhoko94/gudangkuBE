@@ -94,12 +94,30 @@ Setelah environment variables di-set:
 
 1. Railway akan otomatis deploy saat push ke GitHub
 2. Atau klik **"Deploy"** manual di dashboard
-3. **Migrasi database akan otomatis jalan** karena ada di `build` command:
-   ```json
-   "build": "npx prisma migrate deploy"
+3. **Migrasi database akan otomatis jalan** karena ada di `nixpacks.toml`:
+   ```toml
+   [phases.build]
+   cmds = ["npx prisma migrate deploy"]
    ```
 
-### 8. Verifikasi Deploy
+### 8. Seed Data Demo (Opsional)
+
+Setelah deploy pertama berhasil, jalankan seed untuk menambahkan master data:
+
+**Via Railway CLI:**
+```bash
+railway run npm run seed
+```
+
+**Via Railway Dashboard:**
+1. Klik tab **"Deployments"**
+2. Klik **"..."** → **"Run Command"**
+3. Masukkan: `npm run seed`
+4. Klik **"Run"**
+
+Lihat `RAILWAY_SEED_GUIDE.md` untuk detail lengkap.
+
+### 9. Verifikasi Deploy
 
 1. Tunggu deploy selesai (lihat logs)
 2. Klik **"View Logs"** untuk melihat proses
@@ -253,6 +271,7 @@ VITE_API_BASE_URL=https://your-app.railway.app/api
 ## ✅ Checklist Deploy
 
 - [ ] Kode sudah di-push ke GitHub
+- [ ] Folder `prisma/migrations/` sudah ter-commit (✅ Sudah dicek)
 - [ ] Railway project sudah dibuat
 - [ ] PostgreSQL database sudah dibuat di Railway
 - [ ] Environment variables sudah di-set (DATABASE_URL, PORT, NODE_ENV)
@@ -260,7 +279,8 @@ VITE_API_BASE_URL=https://your-app.railway.app/api
 - [ ] Start command sudah benar (include migrate deploy)
 - [ ] Deploy berhasil tanpa error
 - [ ] API endpoint bisa diakses
-- [ ] Database migration berhasil
+- [ ] Database migration berhasil (cek logs)
+- [ ] Seed data demo sudah dijalankan (opsional, manual)
 - [ ] Frontend sudah di-update dengan URL Railway
 
 ## 💰 Railway Pricing
